@@ -1,6 +1,5 @@
 package bitcoin.crawler;
 
-import com.google.common.util.concurrent.*;
 import org.bitcoinj.core.*;
 import org.bitcoinj.core.listeners.PeerConnectedEventListener;
 import org.bitcoinj.core.listeners.PeerDisconnectedEventListener;
@@ -9,7 +8,9 @@ import org.bitcoinj.net.discovery.DnsDiscovery;
 import org.bitcoinj.net.discovery.PeerDiscoveryException;
 import org.bitcoinj.params.MainNetParams;
 import org.bitcoinj.utils.BriefLogFormatter;
+
 import org.checkerframework.checker.nullness.qual.Nullable;
+import com.google.common.util.concurrent.*;
 
 import java.io.FileWriter;
 import java.net.InetAddress;
@@ -21,42 +22,52 @@ import java.util.concurrent.LinkedBlockingDeque;
 import java.util.concurrent.TimeUnit;
 
 public class Crawler {
-    final static NetworkParameters params = MainNetParams.get();
+    final private static NetworkParameters params = MainNetParams.get();
 
-    public static List<InetAddress> visitedPeers = new ArrayList<>();
-    public static BlockingQueue<InetAddress> pendingPeers = new LinkedBlockingDeque<>();
+    private static List<InetAddress> visitedPeers = new ArrayList<>();
+    private static BlockingQueue<InetSocketAddress> pendingPeers = new LinkedBlockingDeque<>();
 
     private static InetSocketAddress[] dnsPeers;
 
     public static void main (String[] args) throws Exception {
-        FileWriter fw = new FileWriter("visited_test.csv");
-        Context context = new Context(params);
+        FileWriter fw = new FileWriter("addresses.csv");
+        FileWriter fw2 = new FileWriter("discovered.csv");
+
+        Context context = new Context(params); // DO NOT REMOVE
 
         BriefLogFormatter.init();
-        System.out.println("=== DNS ===");
+        System.out.println("=== Discovering initial peers with DNS ===");
         printDNS();
-        System.out.println("=== Version/chain heights ===");
+        System.out.println("===  ======  ======  ======  ======  ======  ===");
 
-        for (InetSocketAddress peer : dnsPeers) pendingPeers.add(peer.getAddress());
+        for (InetSocketAddress peer : dnsPeers) pendingPeers.add(peer);
         System.out.println("Scanning " + pendingPeers.size() + " peers:");
 
         final Object lock = new Object();
 
-        List<ListenableFuture<Void>> futures = new ArrayList<>();
         NioClientManager clientManager = new NioClientManager();
         clientManager.startAsync();
         clientManager.awaitRunning();
 
         while (true) {
             //System.out.println("Peers pending: " + pendingPeers.size());
-            InetAddress addr = pendingPeers.take();
-            InetSocketAddress address = new InetSocketAddress(addr, params.getPort());
+            //InetSocketAddress addr = pendingPeers.take();
+
+            //InetSocketAddress address = new InetSocketAddress(addr, params.getPort());
+            InetSocketAddress address = pendingPeers.take();
             final Peer peer = new Peer(params, new VersionMessage(params, 0), null, new PeerAddress(params, address));
             final SettableFuture<Void> future = SettableFuture.create();
 
             peer.addConnectedEventListener(new PeerConnectedEventListener() {
                 @Override
                 public void onPeerConnected(Peer p, int peerCount) {
+                    VersionMessage ver = peer.getPeerVersionMessage();
+                    long bestHeight = ver.bestHeight;
+                    int clientVersion = ver.clientVersion;
+                    String subVer = ver.subVer;
+                    long localServices = ver.localServices;
+
+
                     ListenableFuture<AddressMessage> addrMsgFut = peer.getAddr();
 
                     Futures.addCallback(addrMsgFut, new FutureCallback<AddressMessage>() {
@@ -67,14 +78,14 @@ public class Crawler {
                                 for (PeerAddress e : result.getAddresses()) {
                                     try {
                                         fw.flush();
-                                        fw.write(addr.getHostAddress() + ";" + e.getAddr().getHostAddress() + "\n");
+                                        fw.write(address.getAddress().getHostAddress() +  ":" + address.getPort() + ";" + e.getAddr().getHostAddress() + ":" + e.getPort() + "\n");
                                     } catch (Exception ex) {
                                         System.out.println(ex.getMessage());
                                     }
 
                                     if (!visitedPeers.contains(e.getAddr())) {
                                         try {
-                                            pendingPeers.put(e.getAddr());
+                                            pendingPeers.put(e.getSocketAddress());
                                         } catch (InterruptedException ex) {
                                             ex.printStackTrace();
                                         }
@@ -88,7 +99,7 @@ public class Crawler {
 
                         @Override
                         public void onFailure(Throwable t) {
-                            System.out.println("Error on node " + addr);
+                            System.out.println("Error on node " + address.getAddress().getHostAddress());
                             future.set(null);
                             peer.close();
                         }
@@ -96,9 +107,16 @@ public class Crawler {
 
                     synchronized (lock) {
                         visitedPeers.add(peer.getAddress().getAddr());
-                        if (visitedPeers.size() % 50 == 0) {
+                        try {
+                            fw2.flush();
+                            fw2.write(address.getAddress().getHostAddress() +  ":" + address.getPort() + ";" + bestHeight + ";" + clientVersion + ";" + subVer + ";" + localServices + "\n");
+                        } catch (Exception ex) {
+                            System.out.println(ex.getMessage());
+                        }
+
+                        if (visitedPeers.size() % 50 == 0 || clientManager.getConnectedClientCount() == 0) {
                             System.out.println("Peers visited already: " + visitedPeers.size());
-                            System.out.println("Trying to connect to " + clientManager.getConnectedClientCount());
+                            System.out.println("Trying to connect to " + clientManager.getConnectedClientCount() + " peers");
                         }
                     }
                 }
@@ -116,27 +134,24 @@ public class Crawler {
                 }
             });
             clientManager.openConnection(address, peer);
-            futures.add(future);
         }
 
-        //Futures.successfulAsList(futures).get();
-        //System.out.println("END");
     }
 
     private static void printDNS() throws PeerDiscoveryException {
         long start = System.currentTimeMillis();
         DnsDiscovery dns = new DnsDiscovery(MainNetParams.get());
         dnsPeers = dns.getPeers(0, 10, TimeUnit.SECONDS);
-        printPeers(dnsPeers);
+        //printPeers(dnsPeers);
         printElapsed(start);
     }
 
-    private static void printPeers(InetSocketAddress[] addresses) {
-        for (InetSocketAddress address : addresses) {
-            String hostAddress = address.getAddress().getHostAddress();
-            System.out.println(String.format("%s:%d", hostAddress, address.getPort()));
-        }
-    }
+//    private static void printPeers(InetSocketAddress[] addresses) {
+//        for (InetSocketAddress address : addresses) {
+//            String hostAddress = address.getAddress().getHostAddress();
+//            System.out.println(String.format("%s:%d", hostAddress, address.getPort()));
+//        }
+//    }
 
     private static void printElapsed(long start) {
         long now = System.currentTimeMillis();
