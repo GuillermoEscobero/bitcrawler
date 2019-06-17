@@ -15,7 +15,10 @@ import com.google.common.util.concurrent.*;
 import java.io.FileWriter;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
+import java.text.DateFormat;
+import java.text.SimpleDateFormat;
 import java.util.ArrayList;
+import java.util.Date;
 import java.util.List;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.LinkedBlockingDeque;
@@ -29,9 +32,18 @@ public class Crawler {
 
     private static InetSocketAddress[] dnsPeers;
 
+    private static final DateFormat sdf = new SimpleDateFormat("yyyyMMddHHmm");
+
     public static void main (String[] args) throws Exception {
-        FileWriter fw = new FileWriter("addresses.csv");
-        FileWriter fw2 = new FileWriter("discovered.csv");
+        Date date = new Date();
+
+        FileWriter fw = new FileWriter("data/addresses_" + sdf.format(date) + ".csv");
+        fw.flush();
+        fw.write("peer" +  ";" + "address" + "\n");
+
+        FileWriter fw2 = new FileWriter("data/discovered_" + sdf.format(date) + ".csv");
+        fw2.flush();
+        fw2.write("ip" +  ";" + "port" + ";" + "height" + ";" + "version" + ";" + "subversion" + ";" + "services" + "\n");
 
         Context context = new Context(params); // DO NOT REMOVE
 
@@ -50,13 +62,10 @@ public class Crawler {
         clientManager.awaitRunning();
 
         while (true) {
-            //System.out.println("Peers pending: " + pendingPeers.size());
-            //InetSocketAddress addr = pendingPeers.take();
-
-            //InetSocketAddress address = new InetSocketAddress(addr, params.getPort());
             InetSocketAddress address = pendingPeers.take();
             final Peer peer = new Peer(params, new VersionMessage(params, 0), null, new PeerAddress(params, address));
             final SettableFuture<Void> future = SettableFuture.create();
+            //System.out.println("Connecting to " + address.getAddress().getHostAddress());
 
             peer.addConnectedEventListener(new PeerConnectedEventListener() {
                 @Override
@@ -66,6 +75,8 @@ public class Crawler {
                     int clientVersion = ver.clientVersion;
                     String subVer = ver.subVer;
                     long localServices = ver.localServices;
+
+                    //System.out.println("CONNECTED TO " + peer.getAddress().getAddr().getHostAddress());
 
 
                     ListenableFuture<AddressMessage> addrMsgFut = peer.getAddr();
@@ -78,7 +89,7 @@ public class Crawler {
                                 for (PeerAddress e : result.getAddresses()) {
                                     try {
                                         fw.flush();
-                                        fw.write(address.getAddress().getHostAddress() +  ":" + address.getPort() + ";" + e.getAddr().getHostAddress() + ":" + e.getPort() + "\n");
+                                        fw.write(address.getAddress().getHostAddress() +  ";" + address.getPort() + ";" + e.getAddr().getHostAddress() + ";" + e.getPort() + "\n");
                                     } catch (Exception ex) {
                                         System.out.println(ex.getMessage());
                                     }
@@ -109,15 +120,17 @@ public class Crawler {
                         visitedPeers.add(peer.getAddress().getAddr());
                         try {
                             fw2.flush();
-                            fw2.write(address.getAddress().getHostAddress() +  ":" + address.getPort() + ";" + bestHeight + ";" + clientVersion + ";" + subVer + ";" + localServices + "\n");
+                            fw2.write(address.getAddress().getHostAddress() +  ";" + address.getPort() + ";" + bestHeight + ";" + clientVersion + ";" + subVer + ";" + localServices + "\n");
                         } catch (Exception ex) {
                             System.out.println(ex.getMessage());
                         }
 
                         if (visitedPeers.size() % 50 == 0 || clientManager.getConnectedClientCount() == 0) {
                             System.out.println("Peers visited already: " + visitedPeers.size());
-                            System.out.println("Trying to connect to " + clientManager.getConnectedClientCount() + " peers");
+                            //System.out.println("Trying to connect to " + clientManager.getConnectedClientCount() + " peers");
                         }
+                        System.out.println("Trying to connect to " + clientManager.getConnectedClientCount() + " peers");
+
                     }
                 }
             });
@@ -142,16 +155,8 @@ public class Crawler {
         long start = System.currentTimeMillis();
         DnsDiscovery dns = new DnsDiscovery(MainNetParams.get());
         dnsPeers = dns.getPeers(0, 10, TimeUnit.SECONDS);
-        //printPeers(dnsPeers);
         printElapsed(start);
     }
-
-//    private static void printPeers(InetSocketAddress[] addresses) {
-//        for (InetSocketAddress address : addresses) {
-//            String hostAddress = address.getAddress().getHostAddress();
-//            System.out.println(String.format("%s:%d", hostAddress, address.getPort()));
-//        }
-//    }
 
     private static void printElapsed(long start) {
         long now = System.currentTimeMillis();
